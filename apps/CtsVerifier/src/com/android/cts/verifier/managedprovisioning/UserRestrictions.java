@@ -18,13 +18,14 @@ package com.android.cts.verifier.managedprovisioning;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.UserManager;
 import android.provider.Settings;
 import android.util.ArrayMap;
 
-import java.util.ArrayList;
-
 import com.android.cts.verifier.R;
+
+import java.util.ArrayList;
 
 public class UserRestrictions {
     private static final String[] RESTRICTION_IDS = new String[] {
@@ -106,7 +107,7 @@ public class UserRestrictions {
             Settings.ACTION_DEVICE_INFO_SETTINGS,
             Settings.ACTION_SECURITY_SETTINGS,
             Settings.ACTION_SYNC_SETTINGS,
-            Settings.ACTION_PRIVACY_SETTINGS,
+            Settings.ACTION_WIRELESS_SETTINGS,
             Settings.ACTION_WIRELESS_SETTINGS,
             Settings.ACTION_SETTINGS,
             Settings.ACTION_LOCATION_SOURCE_SETTINGS,
@@ -172,6 +173,50 @@ public class UserRestrictions {
                 .putExtra(PolicyTransparencyTestActivity.EXTRA_TITLE, context.getString(item.label))
                 .putExtra(PolicyTransparencyTestActivity.EXTRA_SETTINGS_INTENT_ACTION,
                         item.intentAction);
+    }
+
+    public static boolean isRestrictionValid(Context context, String restriction) {
+        final PackageManager pm = context.getPackageManager();
+        switch (restriction) {
+            case UserManager.DISALLOW_ADD_USER:
+            case UserManager.DISALLOW_REMOVE_USER:
+                return UserManager.supportsMultipleUsers();
+            case UserManager.DISALLOW_ADJUST_VOLUME:
+                return pm.hasSystemFeature(PackageManager.FEATURE_AUDIO_OUTPUT);
+            case UserManager.DISALLOW_CONFIG_CELL_BROADCASTS:
+                // Get com.android.internal.R.bool.config_cellBroadcastAppLinks
+                final int resId = context.getResources().getIdentifier(
+                        "config_cellBroadcastAppLinks", "bool", "android");
+                boolean isCellBroadcastAppLinkEnabled = context.getResources().getBoolean(resId);
+                try {
+                    if (isCellBroadcastAppLinkEnabled) {
+                        if (pm.getApplicationEnabledSetting("com.android.cellbroadcastreceiver")
+                                == PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
+                            isCellBroadcastAppLinkEnabled = false;  // CMAS app disabled
+                        }
+                    }
+                } catch (IllegalArgumentException ignored) {
+                    isCellBroadcastAppLinkEnabled = false;  // CMAS app not installed
+                }
+                return isCellBroadcastAppLinkEnabled;
+            case UserManager.DISALLOW_FUN:
+                // Easter egg is not available on watch
+                return !pm.hasSystemFeature(PackageManager.FEATURE_WATCH);
+            case UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS:
+                return pm.hasSystemFeature(PackageManager.FEATURE_TELEPHONY);
+            case UserManager.DISALLOW_CONFIG_WIFI:
+                return pm.hasSystemFeature(PackageManager.FEATURE_WIFI);
+            case UserManager.DISALLOW_OUTGOING_BEAM:
+                return pm.hasSystemFeature(PackageManager.FEATURE_NFC);
+            case UserManager.DISALLOW_SHARE_LOCATION:
+                return pm.hasSystemFeature(PackageManager.FEATURE_LOCATION);
+            case UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES:
+                return !pm.hasSystemFeature(PackageManager.FEATURE_WATCH);
+            case UserManager.DISALLOW_CONFIG_CREDENTIALS:
+                return !pm.hasSystemFeature(PackageManager.FEATURE_WATCH);
+            default:
+                return true;
+        }
     }
 
     private static class UserRestrictionItem {

@@ -26,6 +26,7 @@ import numpy as np
 THRESH_CONVERGE_FOR_EV = 8
 YUV_FULL_SCALE = 255.0
 YUV_SATURATION_MIN = 253.0
+YUV_SATURATION_TOL = 1.0
 
 
 def main():
@@ -39,6 +40,12 @@ def main():
         props = cam.get_camera_properties()
         its.caps.skip_unless(its.caps.ev_compensation(props) and
                              its.caps.ae_lock(props))
+
+        debug = its.caps.debug_mode()
+        if debug:
+            fmt = its.objects.get_largest_yuv_format(props)
+        else:
+            fmt = its.objects.get_smallest_yuv_format(props)
 
         ev_per_step = its.objects.rational_to_float(
                 props['android.control.aeCompensationStep'])
@@ -60,7 +67,7 @@ def main():
             req = its.objects.auto_capture_request()
             req['android.control.aeExposureCompensation'] = ev
             req["android.control.aeLock"] = True
-            caps = cam.do_capture([req]*THRESH_CONVERGE_FOR_EV)
+            caps = cam.do_capture([req]*THRESH_CONVERGE_FOR_EV, fmt)
             for cap in caps:
                 if (cap['metadata']['android.control.aeState'] == LOCKED):
                     y = its.image.convert_capture_to_planes(cap)[0]
@@ -83,11 +90,17 @@ def main():
 
         # Trim extra saturated images
         while lumas and lumas[-1] >= YUV_SATURATION_MIN/YUV_FULL_SCALE:
-            if reds[-1] == greens[-1] == blues[-1]:
+            if (np.isclose(reds[-1], greens[-1],
+                           YUV_SATURATION_TOL/YUV_FULL_SCALE) and
+                    np.isclose(blues[-1], greens[-1],
+                               YUV_SATURATION_TOL/YUV_FULL_SCALE)):
                 lumas.pop(-1)
                 reds.pop(-1)
                 greens.pop(-1)
                 blues.pop(-1)
+                print 'Removed saturated image.'
+            else:
+                break
         # Only allow positive EVs to give saturated image
         assert(len(lumas) > 2)
         luma_diffs = np.diff(lumas)
