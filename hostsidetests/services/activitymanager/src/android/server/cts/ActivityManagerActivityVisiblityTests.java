@@ -41,6 +41,11 @@ public class ActivityManagerActivityVisiblityTests extends ActivityManagerTestBa
         executeShellCommand(AM_START_HOME_ACTIVITY_COMMAND);
         mAmWmState.waitForHomeActivityVisible(mDevice);
 
+        /* TODO: Find a proper way to wait until launcher activity
+         * becomes fully visible. It appears that both VisibleBehindActivity
+         * and home activity are visible at some point before the former
+         * disappears.*/
+        Thread.sleep(3000);
         mAmWmState.computeState(mDevice, null);
         mAmWmState.assertContainsStack(
                 "Must contain fullscreen stack.", FULLSCREEN_WORKSPACE_STACK_ID);
@@ -123,13 +128,15 @@ public class ActivityManagerActivityVisiblityTests extends ActivityManagerTestBa
     }
 
     public void testTranslucentActivityOverDockedStack() throws Exception {
-        if (!supportsMultiWindowMode()) {
+        if (!supportsSplitScreenMultiWindow()) {
             CLog.logAndDisplay(LogLevel.INFO, "Skipping test: no multi-window support");
             return;
         }
 
         launchActivityInDockStack(DOCKED_ACTIVITY_NAME);
+        mAmWmState.computeState(mDevice, new String[] {DOCKED_ACTIVITY_NAME});
         launchActivityInStack(TEST_ACTIVITY_NAME, FULLSCREEN_WORKSPACE_STACK_ID);
+        mAmWmState.computeState(mDevice, new String[] {DOCKED_ACTIVITY_NAME, TEST_ACTIVITY_NAME});
         launchActivityInStack(TRANSLUCENT_ACTIVITY_NAME, DOCKED_STACK_ID);
         mAmWmState.computeState(mDevice, new String[] {TEST_ACTIVITY_NAME, DOCKED_ACTIVITY_NAME,
                 TRANSLUCENT_ACTIVITY_NAME}, false /* compareTaskAndStackBounds */);
@@ -149,7 +156,7 @@ public class ActivityManagerActivityVisiblityTests extends ActivityManagerTestBa
     }
 
     public void testFinishActivityInNonFocusedStack() throws Exception {
-        if (!supportsMultiWindowMode()) {
+        if (!supportsSplitScreenMultiWindow()) {
             CLog.logAndDisplay(LogLevel.INFO, "Skipping test: no multi-window support");
             return;
         }

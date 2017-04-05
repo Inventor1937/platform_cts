@@ -33,15 +33,16 @@ public class CompatibilityBuildHelper {
 
     public static final String MODULE_IDS = "MODULE_IDS";
 
-    private static final String ROOT_DIR = "ROOT_DIR";
+    public static final String ROOT_DIR = "ROOT_DIR";
+    public static final String SUITE_NAME = "SUITE_NAME";
+    public static final String START_TIME_MS = "START_TIME_MS";
+
     private static final String ROOT_DIR2 = "ROOT_DIR2";
     private static final String SUITE_BUILD = "SUITE_BUILD";
-    private static final String SUITE_NAME = "SUITE_NAME";
     private static final String SUITE_FULL_NAME = "SUITE_FULL_NAME";
     private static final String SUITE_VERSION = "SUITE_VERSION";
     private static final String SUITE_PLAN = "SUITE_PLAN";
     private static final String RESULT_DIR = "RESULT_DIR";
-    private static final String START_TIME_MS = "START_TIME_MS";
     private static final String CONFIG_PATH_PREFIX = "DYNAMIC_CONFIG_FILE:";
     private static final String DYNAMIC_CONFIG_OVERRIDE_URL = "DYNAMIC_CONFIG_OVERRIDE_URL";
     private static final String COMMAND_LINE_ARGS = "command_line_args";
@@ -119,6 +120,10 @@ public class CompatibilityBuildHelper {
             // This will be moved to a separate method in a new invocation metadata class.
             return mBuildInfo.getBuildAttributes().get(COMMAND_LINE_ARGS);
         }
+    }
+
+    public String getRecentCommandLineArgs() {
+        return mBuildInfo.getBuildAttributes().get(COMMAND_LINE_ARGS);
     }
 
     public String getSuiteBuild() {
@@ -262,6 +267,13 @@ public class CompatibilityBuildHelper {
      */
     public File getInvocationFailureFile() throws FileNotFoundException {
         return new File(getResultDir(), "invocation_failure.txt");
+    }
+
+    /**
+     * @return a {@link File} in the resultDir for counting expected test runs
+     */
+    public File getTestRunsFile() throws FileNotFoundException {
+        return new File(getResultDir(), "test_runs.txt");
     }
 
     /**

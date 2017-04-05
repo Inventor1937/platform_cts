@@ -19,10 +19,12 @@ package android.wm.cts;
 import com.android.tradefed.device.CollectingOutputReceiver;
 import com.android.tradefed.device.DeviceNotAvailableException;
 import com.android.tradefed.device.ITestDevice;
+import com.android.tradefed.log.LogUtil.CLog;
 import com.android.tradefed.testtype.DeviceTestCase;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 public class CrossAppDragAndDropTests extends DeviceTestCase {
     // Constants copied from ActivityManager.StackId. If they are changed there, these must be
@@ -47,12 +49,16 @@ public class CrossAppDragAndDropTests extends DeviceTestCase {
     private static final String INPUT_MOUSE_SWIPE = "input mouse swipe ";
     private static final String TASK_ID_PREFIX = "taskId";
 
+    // Regex pattern to match adb shell am stack list output of the form:
+    // taskId=<TASK_ID>: <componentName> bounds=[LEFT,TOP][RIGHT,BOTTOM]
+    private static final String TASK_REGEX_PATTERN_STRING =
+            "taskId=[0-9]+: %s bounds=\\[[0-9]+,[0-9]+\\]\\[[0-9]+,[0-9]+\\]";
+
     private static final int SWIPE_DURATION_MS = 500;
 
     private static final String SOURCE_PACKAGE_NAME = "android.wm.cts.dndsourceapp";
     private static final String TARGET_PACKAGE_NAME = "android.wm.cts.dndtargetapp";
     private static final String TARGET_23_PACKAGE_NAME = "android.wm.cts.dndtargetappsdk23";
-
 
     private static final String SOURCE_ACTIVITY_NAME = "DragSource";
     private static final String TARGET_ACTIVITY_NAME = "DropTarget";
@@ -92,15 +98,25 @@ public class CrossAppDragAndDropTests extends DeviceTestCase {
     @Override
     protected void setUp() throws Exception {
         super.setUp();
+
         mDevice = getDevice();
+
+        if (!supportsDragAndDrop()) {
+            return;
+        }
+
         mSourcePackageName = SOURCE_PACKAGE_NAME;
         mTargetPackageName = TARGET_PACKAGE_NAME;
-        cleanupState();
     }
 
     @Override
     protected void tearDown() throws Exception {
         super.tearDown();
+
+        if (!supportsDragAndDrop()) {
+            return;
+        }
+
         mDevice.executeShellCommand(AM_FORCE_STOP + mSourcePackageName);
         mDevice.executeShellCommand(AM_FORCE_STOP + mTargetPackageName);
     }
@@ -208,8 +224,15 @@ public class CrossAppDragAndDropTests extends DeviceTestCase {
         CollectingOutputReceiver outputReceiver = new CollectingOutputReceiver();
         mDevice.executeShellCommand(AM_STACK_LIST, outputReceiver);
         final String output = outputReceiver.getOutput();
+        final StringBuilder builder = new StringBuilder();
+        builder.append("Finding task info for task: ");
+        builder.append(name);
+        builder.append("\nParsing adb shell am output: " );
+        builder.append(output);
+        CLog.i(builder.toString());
+        final Pattern pattern = Pattern.compile(String.format(TASK_REGEX_PATTERN_STRING, name));
         for (String line : output.split("\\n")) {
-            if (line.contains(name)) {
+            if (pattern.matcher(line).find()) {
                 return line;
             }
         }
@@ -288,6 +311,9 @@ public class CrossAppDragAndDropTests extends DeviceTestCase {
 
     private void doTestDragAndDrop(String sourceMode, String targetMode, String expectedDropResult)
             throws Exception {
+        if (!supportsDragAndDrop()) {
+            return;
+        }
 
         launchDockedActivity(mSourcePackageName, SOURCE_ACTIVITY_NAME, sourceMode);
         launchFullscreenActivity(mTargetPackageName, TARGET_ACTIVITY_NAME, targetMode);
@@ -303,8 +329,11 @@ public class CrossAppDragAndDropTests extends DeviceTestCase {
         assertResult(RESULT_KEY_DROP_RESULT, expectedDropResult);
     }
 
+    private void assertResult(String resultKey, String expectedResult) throws Exception {
+        if (!supportsDragAndDrop()) {
+            return;
+        }
 
-    private void assertResult(String resultKey, String expectedResult) {
         if (expectedResult == null) {
             if (mResults.containsKey(resultKey)) {
                 fail("Unexpected " + resultKey + "=" + mResults.get(resultKey));
@@ -312,6 +341,18 @@ public class CrossAppDragAndDropTests extends DeviceTestCase {
         } else {
             assertTrue("Missing " + resultKey, mResults.containsKey(resultKey));
             assertEquals(expectedResult, mResults.get(resultKey));
+        }
+    }
+
+    private boolean supportsDragAndDrop() throws Exception {
+        String supportsMultiwindow = mDevice.executeShellCommand("am supports-multiwindow").trim();
+        if ("true".equals(supportsMultiwindow)) {
+            return true;
+        } else if ("false".equals(supportsMultiwindow)) {
+            return false;
+        } else {
+            throw new Exception(
+                    "device does not support \"am supports-multiwindow\" shell command.");
         }
     }
 
