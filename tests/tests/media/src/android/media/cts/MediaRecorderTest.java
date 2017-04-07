@@ -425,8 +425,9 @@ public class MediaRecorderTest extends ActivityInstrumentationTestCase2<MediaStu
     }
 
     public void testRecordAudioFromAudioSourceUnprocessed() throws Exception {
-        if (!hasMicrophone()) {
-            return; // skip
+        if (!hasMicrophone() || !hasAmrNb()) {
+            MediaUtils.skipTest("no audio codecs or microphone");
+            return;
         }
         mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.UNPROCESSED);
         mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.DEFAULT);
@@ -934,12 +935,13 @@ public class MediaRecorderTest extends ActivityInstrumentationTestCase2<MediaStu
         boolean success = false;
         Surface surface = null;
         int noOfFailure = 0;
-        final float frameRate = getMaxFrameRateForCodec(MediaRecorder.VideoEncoder.H264);
 
         if (!hasH264()) {
             MediaUtils.skipTest("no codecs");
             return true;
         }
+
+        final float frameRate = getMaxFrameRateForCodec(MediaRecorder.VideoEncoder.H264);
 
         try {
             if (persistent) {

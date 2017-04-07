@@ -15,16 +15,22 @@
  */
 package com.android.compatibility.common.util;
 
+import com.android.compatibility.common.util.ChecksumReporter.ChecksumValidationException;
+
+import com.google.common.base.Strings;
+
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
 import org.xmlpull.v1.XmlPullParserFactory;
 import org.xmlpull.v1.XmlSerializer;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -37,6 +43,12 @@ import java.util.List;
 import java.util.Map.Entry;
 import java.util.Set;
 
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerException;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.stream.StreamResult;
+import javax.xml.transform.stream.StreamSource;
+
 /**
  * Handles conversion of results to/from files.
  */
@@ -46,7 +58,16 @@ public class ResultHandler {
     private static final String TYPE = "org.kxml2.io.KXmlParser,org.kxml2.io.KXmlSerializer";
     private static final String NS = null;
     private static final String RESULT_FILE_VERSION = "5.0";
-    /* package */ static final String TEST_RESULT_FILE_NAME = "test_result.xml";
+    public static final String TEST_RESULT_FILE_NAME = "test_result.xml";
+    private static final String FAILURE_REPORT_NAME = "test_result_failures.html";
+    private static final String FAILURE_XSL_FILE_NAME = "compatibility_failures.xsl";
+
+    public static final String[] RESULT_RESOURCES = {
+        "compatibility_result.css",
+        "compatibility_result.xsd",
+        "compatibility_result.xsl",
+        "logo.png"
+    };
 
     // XML constants
     private static final String ABI_ATTR = "abi";
@@ -70,7 +91,7 @@ public class ResultHandler {
     private static final String LOG_URL_ATTR = "log_url";
     private static final String MESSAGE_ATTR = "message";
     private static final String MODULE_TAG = "Module";
-    private static final String MODULES_EXECUTED_ATTR = "modules_done";
+    private static final String MODULES_DONE_ATTR = "modules_done";
     private static final String MODULES_TOTAL_ATTR = "modules_total";
     private static final String NAME_ATTR = "name";
     private static final String NOT_EXECUTED_ATTR = "not_executed";
@@ -98,12 +119,17 @@ public class ResultHandler {
      * @param resultsDir
      */
     public static List<IInvocationResult> getResults(File resultsDir) {
+        return getResults(resultsDir, false);
+    }
+
+    /**
+     * @param resultsDir
+     * @param useChecksum
+     */
+    public static List<IInvocationResult> getResults(
+            File resultsDir, Boolean useChecksum) {
         List<IInvocationResult> results = new ArrayList<>();
-        File[] files = resultsDir.listFiles();
-        if (files == null || files.length == 0) {
-            // No results, just return the empty list
-            return results;
-        }
+        List<File> files = getResultDirectories(resultsDir);
         for (File resultDir : files) {
             if (!resultDir.isDirectory()) {
                 continue;
@@ -113,7 +139,20 @@ public class ResultHandler {
                 if (!resultFile.exists()) {
                     continue;
                 }
+                Boolean invocationUseChecksum = useChecksum;
                 IInvocationResult invocation = new InvocationResult();
+                invocation.setRetryDirectory(resultDir);
+                ChecksumReporter checksumReporter = null;
+                if (invocationUseChecksum) {
+                    try {
+                        checksumReporter = ChecksumReporter.load(resultDir);
+                        invocation.setRetryChecksumStatus(RetryChecksumStatus.RetryWithChecksum);
+                    } catch (ChecksumValidationException e) {
+                        // Unable to read checksum form previous execution
+                        invocation.setRetryChecksumStatus(RetryChecksumStatus.RetryWithoutChecksum);
+                        invocationUseChecksum = false;
+                    }
+                }
                 XmlPullParserFactory factory = XmlPullParserFactory.newInstance();
                 XmlPullParser parser = factory.newPullParser();
                 parser.setInput(new FileReader(resultFile));
@@ -151,10 +190,12 @@ public class ResultHandler {
                     String moduleId = AbiUtils.createId(abi, name);
                     boolean done = Boolean.parseBoolean(parser.getAttributeValue(NS, DONE_ATTR));
                     IModuleResult module = invocation.getOrCreateModule(moduleId);
-                    module.setDone(done);
-                    int notExecuted =
-                            Integer.parseInt(parser.getAttributeValue(NS, NOT_EXECUTED_ATTR));
+                    module.initializeDone(done);
+                    int notExecuted = Integer.parseInt(
+                            parser.getAttributeValue(NS, NOT_EXECUTED_ATTR));
                     module.setNotExecuted(notExecuted);
+                    long runtime = Long.parseLong(parser.getAttributeValue(NS, RUNTIME_ATTR));
+                    module.addRuntime(runtime);
                     while (parser.nextTag() == XmlPullParser.START_TAG) {
                         parser.require(XmlPullParser.START_TAG, NS, CASE_TAG);
                         String caseName = parser.getAttributeValue(NS, NAME_ATTR);
@@ -190,10 +231,22 @@ public class ResultHandler {
                                 }
                             }
                             parser.require(XmlPullParser.END_TAG, NS, TEST_TAG);
+                            Boolean checksumMismatch = invocationUseChecksum
+                                    && !checksumReporter.containsTestResult(
+                                    test, module, invocation.getBuildFingerprint());
+                            if (checksumMismatch) {
+                                test.removeResult();
+                            }
                         }
                         parser.require(XmlPullParser.END_TAG, NS, CASE_TAG);
                     }
                     parser.require(XmlPullParser.END_TAG, NS, MODULE_TAG);
+                    Boolean checksumMismatch = invocationUseChecksum
+                            && !checksumReporter.containsModuleResult(
+                            module, invocation.getBuildFingerprint());
+                    if (checksumMismatch) {
+                        module.initializeDone(false);
+                    }
                 }
                 parser.require(XmlPullParser.END_TAG, NS, RESULT_TAG);
                 results.add(invocation);
@@ -229,7 +282,7 @@ public class ResultHandler {
             String suiteBuild, IInvocationResult result, File resultDir,
             long startTime, long endTime, String referenceUrl, String logUrl,
             String commandLineArgs)
-                    throws IOException, XmlPullParserException {
+            throws IOException, XmlPullParserException {
         int passed = result.countResults(TestStatus.PASS);
         int failed = result.countResults(TestStatus.FAIL);
         int notExecuted = result.getNotExecuted();
@@ -280,7 +333,8 @@ public class ResultHandler {
         String hostName = "";
         try {
             hostName = InetAddress.getLocalHost().getHostName();
-        } catch (UnknownHostException ignored) {}
+        } catch (UnknownHostException ignored) {
+        }
         serializer.attribute(NS, HOST_NAME_ATTR, hostName);
         serializer.attribute(NS, OS_NAME_ATTR, System.getProperty("os.name"));
         serializer.attribute(NS, OS_VERSION_ATTR, System.getProperty("os.version"));
@@ -292,6 +346,10 @@ public class ResultHandler {
         serializer.startTag(NS, BUILD_TAG);
         for (Entry<String, String> entry : result.getInvocationInfo().entrySet()) {
             serializer.attribute(NS, entry.getKey(), entry.getValue());
+            if (Strings.isNullOrEmpty(result.getBuildFingerprint()) &&
+                    entry.getKey().equals(BUILD_FINGERPRINT)) {
+                result.setBuildFingerprint(entry.getValue());
+            }
         }
         serializer.endTag(NS, BUILD_TAG);
 
@@ -300,7 +358,7 @@ public class ResultHandler {
         serializer.attribute(NS, PASS_ATTR, Integer.toString(passed));
         serializer.attribute(NS, FAILED_ATTR, Integer.toString(failed));
         serializer.attribute(NS, NOT_EXECUTED_ATTR, Integer.toString(notExecuted));
-        serializer.attribute(NS, MODULES_EXECUTED_ATTR,
+        serializer.attribute(NS, MODULES_DONE_ATTR,
                 Integer.toString(result.getModuleCompleteCount()));
         serializer.attribute(NS, MODULES_TOTAL_ATTR,
                 Integer.toString(result.getModules().size()));
@@ -314,6 +372,8 @@ public class ResultHandler {
             serializer.attribute(NS, RUNTIME_ATTR, String.valueOf(module.getRuntime()));
             serializer.attribute(NS, DONE_ATTR, Boolean.toString(module.isDone()));
             serializer.attribute(NS, NOT_EXECUTED_ATTR, Integer.toString(module.getNotExecuted()));
+            serializer.attribute(NS, PASS_ATTR,
+                    Integer.toString(module.countResults(TestStatus.PASS)));
             for (ICaseResult cr : module.getResults()) {
                 serializer.startTag(NS, CASE_TAG);
                 serializer.attribute(NS, NAME_ATTR, cr.getName());
@@ -366,7 +426,55 @@ public class ResultHandler {
             serializer.endTag(NS, MODULE_TAG);
         }
         serializer.endDocument();
+        createChecksum(resultDir, result);
         return resultFile;
+    }
+
+    public static File createFailureReport(File inputXml) {
+        File failureReport = new File(inputXml.getParentFile(), FAILURE_REPORT_NAME);
+        try (InputStream xslStream = ResultHandler.class.getResourceAsStream(
+                String.format("/report/%s", FAILURE_XSL_FILE_NAME));
+             OutputStream outputStream = new FileOutputStream(failureReport)) {
+
+            Transformer transformer = TransformerFactory.newInstance().newTransformer(
+                    new StreamSource(xslStream));
+            transformer.transform(new StreamSource(inputXml), new StreamResult(outputStream));
+        } catch (IOException | TransformerException ignored) { }
+        return failureReport;
+    }
+
+    private static void createChecksum(File resultDir, IInvocationResult invocationResult) {
+        RetryChecksumStatus retryStatus = invocationResult.getRetryChecksumStatus();
+        switch (retryStatus) {
+            case NotRetry: case RetryWithChecksum:
+                // Do not disrupt the process if there is a problem generating checksum.
+                ChecksumReporter.tryCreateChecksum(resultDir, invocationResult);
+                break;
+            case RetryWithoutChecksum:
+                // If the previous run has an invalid checksum file,
+                // copy it into current results folder for future troubleshooting
+                File retryDirectory = invocationResult.getRetryDirectory();
+                File retryChecksum = new File(retryDirectory, ChecksumReporter.NAME);
+                if (!retryChecksum.exists()) {
+                    // if no checksum file, check for a copy from a previous retry
+                    retryChecksum = new File(retryDirectory, ChecksumReporter.PREV_NAME);
+                }
+
+                if (retryChecksum.exists()) {
+                    File checksumCopy = new File(resultDir, ChecksumReporter.PREV_NAME);
+                    try (OutputStream out = new FileOutputStream(checksumCopy);
+                        InputStream in = new FileInputStream(retryChecksum)) {
+                        // Copy the bits from input stream to output stream
+                        byte[] buf = new byte[1024];
+                        int len;
+                        while ((len = in.read(buf)) > 0) {
+                            out.write(buf, 0, len);
+                        }
+                    } catch (IOException e) {
+                        // Do not disrupt the process if there is a problem copying checksum
+                    }
+                }
+        }
     }
 
     /**
@@ -374,16 +482,67 @@ public class ResultHandler {
      */
     public static IInvocationResult findResult(File resultsDir, Integer sessionId)
             throws FileNotFoundException {
+        return findResult(resultsDir, sessionId, true);
+    }
+
+    /**
+     * Find the IInvocationResult for the given sessionId.
+     */
+    private static IInvocationResult findResult(
+            File resultsDir, Integer sessionId, Boolean useChecksum) throws FileNotFoundException {
         if (sessionId < 0) {
             throw new IllegalArgumentException(
                 String.format("Invalid session id [%d] ", sessionId));
         }
 
-        List<IInvocationResult> results = getResults(resultsDir);
+        List<IInvocationResult> results = getResults(resultsDir, useChecksum);
         if (results == null || sessionId >= results.size()) {
             throw new RuntimeException(String.format("Could not find session [%d]", sessionId));
         }
         return results.get(sessionId);
+    }
+
+    /**
+     * Get the result directory for the given sessionId.
+     */
+    public static File getResultDirectory(File resultsDir, Integer sessionId) {
+        if (sessionId < 0) {
+            throw new IllegalArgumentException(
+                String.format("Invalid session id [%d] ", sessionId));
+        }
+        List<File> allResultDirs = getResultDirectories(resultsDir);
+        if (sessionId >= allResultDirs.size()) {
+            throw new IllegalArgumentException(String.format("Invalid session id [%d], results" +
+                    "directory contains only %d results", sessionId, allResultDirs.size()));
+        }
+        return allResultDirs.get(sessionId);
+    }
+
+    /**
+     * Get a list of child directories that contain test invocation results
+     * @param resultsDir the root test result directory
+     * @return
+     */
+    public static List<File> getResultDirectories(File resultsDir) {
+        List<File> directoryList = new ArrayList<>();
+        File[] files = resultsDir.listFiles();
+        if (files == null || files.length == 0) {
+            // No results, just return the empty list
+            return directoryList;
+        }
+        for (File resultDir : files) {
+            if (!resultDir.isDirectory()) {
+                continue;
+            }
+            // Only include if it contain results file
+            File resultFile = new File(resultDir, TEST_RESULT_FILE_NAME);
+            if (!resultFile.exists()) {
+                continue;
+            }
+            directoryList.add(resultDir);
+        }
+        Collections.sort(directoryList, (d1, d2) -> d1.getName().compareTo(d2.getName()));
+        return directoryList;
     }
 
     /**
