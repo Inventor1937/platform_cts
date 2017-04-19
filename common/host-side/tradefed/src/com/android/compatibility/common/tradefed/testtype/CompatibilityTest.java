@@ -85,9 +85,11 @@ public class CompatibilityTest implements IDeviceTest, IShardableTest, IBuildRec
     public static final String INCLUDE_FILTER_OPTION = "include-filter";
     public static final String EXCLUDE_FILTER_OPTION = "exclude-filter";
     private static final String PLAN_OPTION = "plan";
-    private static final String SUBPLAN_OPTION = "subplan";
+    public static final String SUBPLAN_OPTION = "subplan";
     public static final String MODULE_OPTION = "module";
     public static final String TEST_OPTION = "test";
+    public static final String PRECONDITION_ARG_OPTION = "precondition-arg";
+    public static final char TEST_OPTION_SHORT_NAME = 't';
     private static final String MODULE_ARG_OPTION = "module-arg";
     private static final String TEST_ARG_OPTION = "test-arg";
     public static final String RETRY_OPTION = "retry";
@@ -136,10 +138,16 @@ public class CompatibilityTest implements IDeviceTest, IShardableTest, IBuildRec
     private String mModuleName = null;
 
     @Option(name = TEST_OPTION,
-            shortName = 't',
+            shortName = TEST_OPTION_SHORT_NAME,
             description = "the test run.",
             importance = Importance.IF_UNSET)
     private String mTestName = null;
+
+    @Option(name = PRECONDITION_ARG_OPTION,
+            description = "the arguments to pass to a precondition. The expected format is"
+                    + "\"<arg-name>:<arg-value>\"",
+            importance = Importance.ALWAYS)
+    private List<String> mPreconditionArgs = new ArrayList<>();
 
     @Option(name = MODULE_ARG_OPTION,
             description = "the arguments to pass to a module. The expected format is"
@@ -345,6 +353,11 @@ public class CompatibilityTest implements IDeviceTest, IShardableTest, IBuildRec
                 }
 
             }
+            // Update BuildInfo in each shard to store the original command-line arguments from
+            // the session to be retried. These arguments will be serialized in the report later.
+            if (mRetrySessionId != null) {
+                loadRetryCommandLineArgs(mRetrySessionId);
+            }
             // Get the tests to run in this shard
             List<IModuleDef> modules = mModuleRepo.getModules(getDevice().getSerialNumber());
 
@@ -382,7 +395,7 @@ public class CompatibilityTest implements IDeviceTest, IShardableTest, IBuildRec
                 module.setBuild(mBuildHelper.getBuildInfo());
                 module.setDevice(mDevice);
                 module.setPreparerWhitelist(mPreparerWhitelist);
-                isPrepared &= (module.prepare(mSkipPreconditions));
+                isPrepared &= (module.prepare(mSkipPreconditions, mPreconditionArgs));
             }
             mModuleRepo.setPrepared(isPrepared);
 
@@ -582,6 +595,30 @@ public class CompatibilityTest implements IDeviceTest, IShardableTest, IBuildRec
     }
 
     /**
+     * Sets the retry command-line args to be stored in the BuildInfo and serialized into the
+     * report upon completion of the invocation.
+     */
+    void loadRetryCommandLineArgs(Integer sessionId) {
+        IInvocationResult result = null;
+        try {
+            result = ResultHandler.findResult(mBuildHelper.getResultsDir(), sessionId);
+        } catch (FileNotFoundException e) {
+            // We should never reach this point, because this method should only be called
+            // after setupFilters(), so result exists if we've gotten this far
+            throw new RuntimeException(e);
+        }
+        if (result == null) {
+            // Again, this should never happen
+            throw new IllegalArgumentException(String.format(
+                    "Could not find session with id %d", sessionId));
+        }
+        String retryCommandLineArgs = result.getCommandLineArgs();
+        if (retryCommandLineArgs != null) {
+            mBuildHelper.setRetryCommandLineArgs(retryCommandLineArgs);
+        }
+    }
+
+    /**
      * Sets the include/exclude filters up based on if a module name was given or whether this is a
      * retry run.
      */
@@ -616,8 +653,6 @@ public class CompatibilityTest implements IDeviceTest, IShardableTest, IBuildRec
 
             String retryCommandLineArgs = result.getCommandLineArgs();
             if (retryCommandLineArgs != null) {
-                // Copy the original command into the build helper so it can be serialized later
-                mBuildHelper.setRetryCommandLineArgs(retryCommandLineArgs);
                 try {
                     // parse the command-line string from the result file and set options
                     ArgsOptionParser parser = new ArgsOptionParser(this);
@@ -729,5 +764,4 @@ public class CompatibilityTest implements IDeviceTest, IShardableTest, IBuildRec
 
         return shardQueue;
     }
-
 }
